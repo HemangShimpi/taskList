@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'firebase_options.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const TaskManagerApp());
 }
 
@@ -18,15 +23,38 @@ class TaskManagerApp extends StatelessWidget {
 }
 
 class Task {
+  String id;
   String name;
   bool isCompleted;
   Map<String, Map<String, List<String>>> subTasks;
 
   Task({
+    required this.id,
     required this.name,
     this.isCompleted = false,
     this.subTasks = const {},
   });
+
+  factory Task.fromFirestore(DocumentSnapshot doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    return Task(
+      id: doc.id,
+      name: data['name'],
+      isCompleted: data['isCompleted'],
+      subTasks: (data['subTasks'] as Map<String, dynamic>? ?? {}).map(
+        (day, times) => MapEntry(
+          day,
+          (times as Map<String, dynamic>).map(
+            (time, list) => MapEntry(time, List<String>.from(list)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {'name': name, 'isCompleted': isCompleted, 'subTasks': subTasks};
+  }
 }
 
 class TaskListScreen extends StatefulWidget {
@@ -37,81 +65,116 @@ class TaskListScreen extends StatefulWidget {
 }
 
 class _TaskListScreenState extends State<TaskListScreen> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _controller = TextEditingController();
-  final List<Task> _tasks = [];
+  List<Task> _tasks = [];
 
   @override
   void initState() {
     super.initState();
-    _initializeDefaultTasks();
+    _loadTasks();
   }
 
-  void _initializeDefaultTasks() {
-    _tasks.addAll([
-      Task(
-        name: 'Study Flutter',
-        subTasks: {
-          'Monday': {
-            '9 am - 10 am': ['Widgets Overview', 'StatefulWidget Practice'],
+  Future<void> _loadTasks() async {
+    final snapshot = await _firestore.collection('tasks').get();
+
+    if (snapshot.docs.isEmpty) {
+      final defaultTasks = [
+        Task(
+          id: '',
+          name: 'Study Flutter',
+          subTasks: {
+            'Monday': {
+              '9 am - 10 am': ['Widgets Overview', 'StatefulWidget Practice'],
+            },
           },
-        },
-      ),
-      Task(
-        name: 'Gym Session',
-        subTasks: {
-          'Tuesday': {
-            '6 pm - 7 pm': ['Cardio', 'Stretching'],
+        ),
+        Task(
+          id: '',
+          name: 'Gym Session',
+          subTasks: {
+            'Tuesday': {
+              '6 pm - 7 pm': ['Cardio', 'Stretching'],
+            },
           },
-        },
-      ),
-      Task(
-        name: 'Grocery Shopping',
-        subTasks: {
-          'Wednesday': {
-            '5 pm - 6 pm': ['Buy Fruits', 'Buy Milk'],
+        ),
+        Task(
+          id: '',
+          name: 'Grocery Shopping',
+          subTasks: {
+            'Wednesday': {
+              '5 pm - 6 pm': ['Buy Fruits', 'Buy Milk'],
+            },
           },
-        },
-      ),
-      Task(
-        name: 'Project Meeting',
-        subTasks: {
-          'Thursday': {
-            '2 pm - 3 pm': ['Team Sync', 'Update Timeline'],
+        ),
+        Task(
+          id: '',
+          name: 'Project Meeting',
+          subTasks: {
+            'Thursday': {
+              '2 pm - 3 pm': ['Team Sync', 'Update Timeline'],
+            },
           },
-        },
-      ),
-      Task(
-        name: 'Watch Tutorial',
-        subTasks: {
-          'Friday': {
-            '7 pm - 8 pm': ['YouTube Playlist'],
+        ),
+        Task(
+          id: '',
+          name: 'Watch Tutorial',
+          subTasks: {
+            'Friday': {
+              '7 pm - 8 pm': ['YouTube Playlist'],
+            },
           },
-        },
-      ),
-    ]);
+        ),
+      ];
+
+      for (var task in defaultTasks) {
+        final docRef = await _firestore.collection('tasks').add(task.toMap());
+        task.id = docRef.id;
+      }
+
+      setState(() {
+        _tasks = defaultTasks;
+      });
+    } else {
+      setState(() {
+        _tasks = snapshot.docs.map((doc) => Task.fromFirestore(doc)).toList();
+      });
+    }
   }
 
-  void _addTask() {
+  Future<void> _addTask() async {
     if (_controller.text.isEmpty) return;
+
+    final docRef = await _firestore.collection('tasks').add({
+      'name': _controller.text,
+      'isCompleted': false,
+      'subTasks': {},
+    });
+
     setState(() {
-      _tasks.add(Task(name: _controller.text, subTasks: {}));
+      _tasks.add(Task(id: docRef.id, name: _controller.text));
       _controller.clear();
     });
   }
 
-  void _toggleTask(Task task) {
+  Future<void> _toggleTask(Task task) async {
+    await _firestore.collection('tasks').doc(task.id).update({
+      'isCompleted': !task.isCompleted,
+    });
+
     setState(() {
       task.isCompleted = !task.isCompleted;
     });
   }
 
-  void _deleteTask(Task task) {
+  Future<void> _deleteTask(Task task) async {
+    await _firestore.collection('tasks').doc(task.id).delete();
     setState(() {
-      _tasks.remove(task);
+      _tasks.removeWhere((t) => t.id == task.id);
     });
   }
 
-  void _addSubTask(Task task) {
+  Future<void> _addSubTask(Task task) async {
     final dayController = TextEditingController();
     final timeController = TextEditingController();
     final detailController = TextEditingController();
@@ -146,7 +209,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
               child: const Text('Cancel'),
             ),
             ElevatedButton(
-              onPressed: () {
+              onPressed: () async {
                 final day = dayController.text.trim();
                 final time = timeController.text.trim();
                 final details =
@@ -161,6 +224,10 @@ class _TaskListScreenState extends State<TaskListScreen> {
                   task.subTasks.putIfAbsent(day, () => {});
                   task.subTasks[day]!.putIfAbsent(time, () => []);
                   task.subTasks[day]![time]!.addAll(details);
+                });
+
+                await _firestore.collection('tasks').doc(task.id).update({
+                  'subTasks': task.subTasks,
                 });
 
                 Navigator.pop(context);
